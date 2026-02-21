@@ -6,11 +6,10 @@ resource "aws_s3_bucket" "example" {
   bucket = "ng-deliveryops-dev-sandbox-${random_id.suffix.hex}"
 
   tags = {
-    system      = "deliveryops-blueprint"
-    env         = "dev"
-    lifecycle   = "sandbox"
-    owner       = "nivedita"
-    cost_center = "portfolio"
+    system  = "deliveryops-blueprint"
+    env     = "dev"
+    owner   = "nivedita"
+    release = "apply-dev-smoke"
   }
 }
 
