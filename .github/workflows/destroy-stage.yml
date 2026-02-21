@@ -11,17 +11,11 @@ on:
 jobs:
   destroy:
     runs-on: ubuntu-latest
-
-    # Approval gate (since your stage environment has required reviewers)
     environment: stage
 
     permissions:
       id-token: write
       contents: read
-
-    defaults:
-      run:
-        working-directory: infra/envs/stage
 
     steps:
       - name: Guard — confirm input
@@ -46,6 +40,7 @@ jobs:
           terraform_version: 1.6.6
 
       - name: Terraform init (remote backend)
+        working-directory: infra/envs/stage
         run: |
           terraform init -input=false \
             -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
@@ -54,4 +49,5 @@ jobs:
             -backend-config="region=${{ vars.AWS_REGION }}"
 
       - name: Terraform destroy
+        working-directory: infra/envs/stage
         run: terraform destroy -input=false -auto-approve
