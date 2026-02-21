@@ -22,4 +22,3 @@ jobs:
       tf_state_bucket: ${{ vars.TF_STATE_BUCKET }}
       tf_lock_table: ${{ vars.TF_LOCK_TABLE }}
       state_key: deliveryops/dev/terraform.tfstate
-      environment_name: dev
