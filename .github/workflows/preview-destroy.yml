@@ -26,7 +26,7 @@ jobs:
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::<YOUR_ACCOUNT_ID>:role/deliveryops-dev
+          role-to-assume: arn:aws:iam::418272755898:role/deliveryops-dev
           aws-region: us-east-1
 
       - name: Terraform Init (preview backend key)
