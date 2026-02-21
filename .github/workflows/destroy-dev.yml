@@ -1,0 +1,35 @@
+name: destroy-dev
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type DESTROY to confirm"
+        required: true
+        type: string
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Confirm input
+        run: |
+          if [ "${{ inputs.confirm }}" != "DESTROY" ]; then
+            echo "Confirmation failed. You must type DESTROY."
+            exit 1
+          fi
+
+  destroy:
+    needs: guard
+    permissions:
+      id-token: write
+      contents: read
+
+    uses: ./.github/workflows/terraform-destroy.yml
+    with:
+      aws_role_arn: ${{ vars.AWS_ROLE_DEV }}
+      aws_region: ${{ vars.AWS_REGION }}
+      working_directory: infra/envs/dev
+      tf_state_bucket: ${{ vars.TF_STATE_BUCKET }}
+      tf_lock_table: ${{ vars.TF_LOCK_TABLE }}
+      state_key: deliveryops/dev/terraform.tfstate
