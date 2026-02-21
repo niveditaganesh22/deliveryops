@@ -1,0 +1,19 @@
+name: plan-dev
+
+on:
+  pull_request:
+    paths:
+     - "infra/envs/dev/**"
+     - ".github/workflows/terraform-plan.yml"
+     - ".github/workflows/plan-dev.yml"
+
+jobs:
+  plan:
+    uses: ./.github/workflows/terraform-plan.yml
+    with:
+      aws_role_arn: ${{ vars.AWS_ROLE_DEV }}
+      aws_region: ${{ vars.AWS_REGION }}
+      working_directory: infra/envs/dev
+      tf_state_bucket: ${{ vars.TF_STATE_BUCKET }}
+      tf_lock_table: ${{ vars.TF_LOCK_TABLE }}
+      state_key: deliveryops/dev/terraform.tfstate
