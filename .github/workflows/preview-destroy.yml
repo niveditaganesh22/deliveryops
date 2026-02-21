@@ -1,0 +1,43 @@
+name: preview-destroy
+
+on:
+  pull_request:
+    types: [closed]
+
+concurrency:
+  group: preview-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  destroy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::<YOUR_ACCOUNT_ID>:role/deliveryops-dev
+          aws-region: ca-central-1
+
+      - name: Terraform Init (preview backend key)
+        working-directory: infra/envs/preview
+        run: |
+          terraform init -reconfigure \
+            -backend-config="key=deliveryops/preview/pr-${{ github.event.pull_request.number }}.tfstate"
+
+      - name: Terraform Destroy (preview)
+        working-directory: infra/envs/preview
+        env:
+          TF_VAR_pr_number: ${{ github.event.pull_request.number }}
+        run: |
+          terraform destroy -auto-approve

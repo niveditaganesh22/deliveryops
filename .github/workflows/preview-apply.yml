@@ -1,0 +1,51 @@
+name: preview-apply
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+    paths:
+      - "infra/envs/preview/**"
+      - "infra/modules/**"
+      - "infra/bootstrap/**"
+
+concurrency:
+  group: preview-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: read
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      # Use whichever role you want:
+      # - ideal: create a dedicated deliveryops-preview role
+      # - acceptable now: reuse deliveryops-dev role
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::<YOUR_ACCOUNT_ID>:role/deliveryops-dev
+          aws-region: ca-central-1
+
+      - name: Terraform Init (preview backend key)
+        working-directory: infra/envs/preview
+        run: |
+          terraform init -reconfigure \
+            -backend-config="key=deliveryops/preview/pr-${{ github.event.pull_request.number }}.tfstate"
+
+      - name: Terraform Apply (preview)
+        working-directory: infra/envs/preview
+        env:
+          TF_VAR_pr_number: ${{ github.event.pull_request.number }}
+        run: |
+          terraform apply -auto-approve
