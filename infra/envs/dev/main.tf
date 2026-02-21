@@ -1,7 +1,7 @@
 provider "aws" {
   region = "us-east-1"
 }
-
+# trigger plan-dev
 resource "aws_s3_bucket" "example" {
   bucket = "ng-deliveryops-dev-sandbox-${random_id.suffix.hex}"
 
