@@ -1,0 +1,26 @@
+name: apply-stage
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_tag:
+        description: "Release tag (optional for now)"
+        required: false
+        type: string
+
+jobs:
+  apply:
+    environment: stage
+    permissions:
+      id-token: write
+      contents: read
+
+    uses: ./.github/workflows/terraform-apply.yml
+    with:
+      aws_role_arn: ${{ vars.AWS_ROLE_STAGE }}
+      aws_region: ${{ vars.AWS_REGION }}
+      working_directory: infra/envs/stage
+      tf_state_bucket: ${{ vars.TF_STATE_BUCKET }}
+      tf_lock_table: ${{ vars.TF_LOCK_TABLE }}
+      state_key: deliveryops/stage/terraform.tfstate
+      environment_name: stage
