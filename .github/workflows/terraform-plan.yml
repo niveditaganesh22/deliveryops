@@ -38,6 +38,7 @@ on:
 jobs:
   plan:
     runs-on: ubuntu-latest
+
     permissions:
       id-token: write
       contents: read
@@ -51,7 +52,8 @@ jobs:
         working-directory: ${{ inputs.working_directory }}
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
@@ -66,12 +68,11 @@ jobs:
 
       - name: Terraform init (remote backend)
         run: |
-          terraform init -input=false ^
-            -backend-config="bucket=${{ inputs.tf_state_bucket }}" ^
-            -backend-config="dynamodb_table=${{ inputs.tf_lock_table }}" ^
-            -backend-config="key=${{ inputs.state_key }}" ^
+          terraform init -input=false \
+            -backend-config="bucket=${{ inputs.tf_state_bucket }}" \
+            -backend-config="dynamodb_table=${{ inputs.tf_lock_table }}" \
+            -backend-config="key=${{ inputs.state_key }}" \
             -backend-config="region=${{ inputs.aws_region }}"
-        shell: bash
 
       - name: Terraform fmt check
         run: terraform fmt -check -recursive
@@ -83,6 +84,7 @@ jobs:
         id: plan
         run: |
           set +e
+
           VARS=""
           if [ -n "${{ inputs.tf_vars_file }}" ]; then
             VARS="-var-file=${{ inputs.tf_vars_file }}"
@@ -90,9 +92,9 @@ jobs:
 
           terraform plan -input=false -no-color -detailed-exitcode $VARS -out=tfplan.out > plan.txt
           EXITCODE=$?
+
           echo "exitcode=$EXITCODE" >> "$GITHUB_OUTPUT"
           exit 0
-        shell: bash
 
       - name: Upload plan artifacts
         uses: actions/upload-artifact@v4
@@ -111,7 +113,12 @@ jobs:
             const body = fs.readFileSync('${{ inputs.working_directory }}/plan.txt', 'utf8')
               .split('\n').slice(0, 200).join('\n');
             const exitcode = '${{ steps.plan.outputs.exitcode }}';
-            const header = `### Terraform Plan (${exitcode === '2' ? 'changes detected' : exitcode === '0' ? 'no changes' : 'plan error'})`;
+            const header =
+              exitcode === '2'
+                ? '### Terraform Plan (changes detected)'
+                : exitcode === '0'
+                ? '### Terraform Plan (no changes)'
+                : '### Terraform Plan (error)';
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -125,4 +132,3 @@ jobs:
             echo "Terraform plan failed."
             exit 1
           fi
-        shell: bash
