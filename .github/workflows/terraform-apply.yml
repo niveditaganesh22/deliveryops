@@ -1,0 +1,93 @@
+name: reusable-terraform-apply
+
+on:
+  workflow_call:
+    inputs:
+      aws_role_arn:
+        type: string
+        required: true
+      aws_region:
+        type: string
+        required: true
+
+      working_directory:
+        type: string
+        required: true
+
+      tf_state_bucket:
+        type: string
+        required: true
+      tf_lock_table:
+        type: string
+        required: true
+
+      state_key:
+        type: string
+        required: true
+
+      tf_vars_file:
+        type: string
+        required: false
+        default: ""
+
+      environment_name:
+        type: string
+        required: false
+        default: ""
+
+    outputs:
+      applied:
+        description: "Whether apply completed"
+        value: ${{ jobs.apply.outputs.applied }}
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+
+    # Caller must grant these permissions
+    permissions:
+      id-token: write
+      contents: read
+
+    outputs:
+      applied: ${{ steps.done.outputs.applied }}
+
+    defaults:
+      run:
+        working-directory: ${{ inputs.working_directory }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ inputs.aws_role_arn }}
+          aws-region: ${{ inputs.aws_region }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.6.6
+
+      - name: Terraform init (remote backend)
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=${{ inputs.tf_state_bucket }}" \
+            -backend-config="dynamodb_table=${{ inputs.tf_lock_table }}" \
+            -backend-config="key=${{ inputs.state_key }}" \
+            -backend-config="region=${{ inputs.aws_region }}"
+
+      - name: Terraform apply
+        run: |
+          VARS=""
+          if [ -n "${{ inputs.tf_vars_file }}" ]; then
+            VARS="-var-file=${{ inputs.tf_vars_file }}"
+          fi
+
+          terraform apply -input=false -auto-approve $VARS
+
+      - name: Mark applied
+        id: done
+        run: echo "applied=true" >> "$GITHUB_OUTPUT"
