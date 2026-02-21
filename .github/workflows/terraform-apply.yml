@@ -9,31 +9,18 @@ on:
       aws_region:
         type: string
         required: true
-
       working_directory:
         type: string
         required: true
-
       tf_state_bucket:
         type: string
         required: true
       tf_lock_table:
         type: string
         required: true
-
       state_key:
         type: string
         required: true
-
-      tf_vars_file:
-        type: string
-        required: false
-        default: ""
-
-      environment_name:
-        type: string
-        required: false
-        default: ""
 
 jobs:
   apply:
@@ -48,8 +35,7 @@ jobs:
         working-directory: ${{ inputs.working_directory }}
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
@@ -71,10 +57,4 @@ jobs:
             -backend-config="region=${{ inputs.aws_region }}"
 
       - name: Terraform apply
-        run: |
-          VARS=""
-          if [ -n "${{ inputs.tf_vars_file }}" ]; then
-            VARS="-var-file=${{ inputs.tf_vars_file }}"
-          fi
-
-          terraform apply -input=false -auto-approve $VARS
+        run: terraform apply -input=false -auto-approve
