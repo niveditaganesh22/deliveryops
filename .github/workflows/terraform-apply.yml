@@ -35,22 +35,13 @@ on:
         required: false
         default: ""
 
-    outputs:
-      applied:
-        description: "Whether apply completed"
-        value: ${{ jobs.apply.outputs.applied }}
-
 jobs:
   apply:
     runs-on: ubuntu-latest
 
-    # Caller must grant these permissions
     permissions:
       id-token: write
       contents: read
-
-    outputs:
-      applied: ${{ steps.done.outputs.applied }}
 
     defaults:
       run:
@@ -87,7 +78,3 @@ jobs:
           fi
 
           terraform apply -input=false -auto-approve $VARS
-
-      - name: Mark applied
-        id: done
-        run: echo "applied=true" >> "$GITHUB_OUTPUT"
