@@ -1,0 +1,16 @@
+name: validate-blueprint
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Ensure workflows exist
+        run: |
+          test -f workflows/node-ci.yml
+          echo "Blueprint structure looks OK."

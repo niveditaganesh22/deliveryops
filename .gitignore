@@ -1,0 +1,25 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+
+# Node
+node_modules/
+dist/
+npm-debug.log*
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Terraform
+**/.terraform/
+**/.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+crash.log
+
+# Secrets
+.env
+*.pem
+*.key
