@@ -1,20 +1,20 @@
-name: plan-dev
+name: apply-dev
 
 on:
-  pull_request:
+  push:
+    branches: ["main"]
     paths:
       - "infra/envs/dev/**"
-      - ".github/workflows/terraform-plan.yml"
-      - ".github/workflows/plan-dev.yml"
+      - ".github/workflows/terraform-apply.yml"
+      - ".github/workflows/apply-dev.yml"
 
 jobs:
-  plan:
+  apply:
     permissions:
       id-token: write
       contents: read
-      pull-requests: write
 
-    uses: ./.github/workflows/terraform-plan.yml
+    uses: ./.github/workflows/terraform-apply.yml
     with:
       aws_role_arn: ${{ vars.AWS_ROLE_DEV }}
       aws_region: ${{ vars.AWS_REGION }}
@@ -22,3 +22,4 @@ jobs:
       tf_state_bucket: ${{ vars.TF_STATE_BUCKET }}
       tf_lock_table: ${{ vars.TF_LOCK_TABLE }}
       state_key: deliveryops/dev/terraform.tfstate
+      environment_name: dev
