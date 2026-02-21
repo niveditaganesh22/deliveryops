@@ -1,0 +1,64 @@
+name: reusable-terraform-destroy
+
+on:
+  workflow_call:
+    inputs:
+      aws_role_arn:
+        type: string
+        required: true
+      aws_region:
+        type: string
+        required: true
+
+      working_directory:
+        type: string
+        required: true
+
+      tf_state_bucket:
+        type: string
+        required: true
+      tf_lock_table:
+        type: string
+        required: true
+
+      state_key:
+        type: string
+        required: true
+
+jobs:
+  destroy:
+    runs-on: ubuntu-latest
+
+    permissions:
+      id-token: write
+      contents: read
+
+    defaults:
+      run:
+        working-directory: ${{ inputs.working_directory }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ inputs.aws_role_arn }}
+          aws-region: ${{ inputs.aws_region }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.6.6
+
+      - name: Terraform init (remote backend)
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=${{ inputs.tf_state_bucket }}" \
+            -backend-config="dynamodb_table=${{ inputs.tf_lock_table }}" \
+            -backend-config="key=${{ inputs.state_key }}" \
+            -backend-config="region=${{ inputs.aws_region }}"
+
+      - name: Terraform destroy
+        run: terraform destroy -input=false -auto-approve
