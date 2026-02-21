@@ -9,6 +9,11 @@ on:
 
 jobs:
   plan:
+    permissions:
+      id-token: write
+      contents: read
+      pull-requests: write
+
     uses: ./.github/workflows/terraform-plan.yml
     with:
       aws_role_arn: ${{ vars.AWS_ROLE_DEV }}
