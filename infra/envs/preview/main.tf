@@ -16,5 +16,6 @@ resource "aws_s3_bucket" "example" {
     pr      = tostring(var.pr_number)
     ttl     = "48h"
     release = "preview"
+    smoke   = "update-test"
   }
 }
