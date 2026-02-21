@@ -1,0 +1,25 @@
+name: apply-dev
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "infra/envs/dev/**"
+      - ".github/workflows/terraform-apply.yml"
+      - ".github/workflows/apply-dev.yml"
+
+jobs:
+  apply:
+    permissions:
+      id-token: write
+      contents: read
+
+    uses: ./.github/workflows/terraform-apply.yml
+    with:
+      aws_role_arn: ${{ vars.AWS_ROLE_DEV }}
+      aws_region: ${{ vars.AWS_REGION }}
+      working_directory: infra/envs/dev
+      tf_state_bucket: ${{ vars.TF_STATE_BUCKET }}
+      tf_lock_table: ${{ vars.TF_LOCK_TABLE }}
+      state_key: deliveryops/dev/terraform.tfstate
+      environment_name: dev
