@@ -1,0 +1,128 @@
+name: reusable-terraform-plan
+
+on:
+  workflow_call:
+    inputs:
+      aws_role_arn:
+        type: string
+        required: true
+      aws_region:
+        type: string
+        required: true
+
+      working_directory:
+        type: string
+        required: true
+
+      tf_state_bucket:
+        type: string
+        required: true
+      tf_lock_table:
+        type: string
+        required: true
+
+      state_key:
+        type: string
+        required: true
+
+      tf_vars_file:
+        type: string
+        required: false
+        default: ""
+
+    outputs:
+      plan-exitcode:
+        description: "Terraform detailed exit code (0 no changes, 2 changes)"
+        value: ${{ jobs.plan.outputs.plan-exitcode }}
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+      pull-requests: write
+
+    outputs:
+      plan-exitcode: ${{ steps.plan.outputs.exitcode }}
+
+    defaults:
+      run:
+        working-directory: ${{ inputs.working_directory }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ inputs.aws_role_arn }}
+          aws-region: ${{ inputs.aws_region }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.6.6
+
+      - name: Terraform init (remote backend)
+        run: |
+          terraform init -input=false ^
+            -backend-config="bucket=${{ inputs.tf_state_bucket }}" ^
+            -backend-config="dynamodb_table=${{ inputs.tf_lock_table }}" ^
+            -backend-config="key=${{ inputs.state_key }}" ^
+            -backend-config="region=${{ inputs.aws_region }}"
+        shell: bash
+
+      - name: Terraform fmt check
+        run: terraform fmt -check -recursive
+
+      - name: Terraform validate
+        run: terraform validate
+
+      - name: Terraform plan
+        id: plan
+        run: |
+          set +e
+          VARS=""
+          if [ -n "${{ inputs.tf_vars_file }}" ]; then
+            VARS="-var-file=${{ inputs.tf_vars_file }}"
+          fi
+
+          terraform plan -input=false -no-color -detailed-exitcode $VARS -out=tfplan.out > plan.txt
+          EXITCODE=$?
+          echo "exitcode=$EXITCODE" >> "$GITHUB_OUTPUT"
+          exit 0
+        shell: bash
+
+      - name: Upload plan artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-plan
+          path: |
+            ${{ inputs.working_directory }}/plan.txt
+            ${{ inputs.working_directory }}/tfplan.out
+
+      - name: Comment plan summary on PR (if PR)
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('${{ inputs.working_directory }}/plan.txt', 'utf8')
+              .split('\n').slice(0, 200).join('\n');
+            const exitcode = '${{ steps.plan.outputs.exitcode }}';
+            const header = `### Terraform Plan (${exitcode === '2' ? 'changes detected' : exitcode === '0' ? 'no changes' : 'plan error'})`;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `${header}\n\n\`\`\`\n${body}\n\`\`\``
+            });
+
+      - name: Fail if plan had error
+        run: |
+          if [ "${{ steps.plan.outputs.exitcode }}" = "1" ]; then
+            echo "Terraform plan failed."
+            exit 1
+          fi
+        shell: bash
