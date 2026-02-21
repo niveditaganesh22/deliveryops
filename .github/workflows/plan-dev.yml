@@ -3,9 +3,9 @@ name: plan-dev
 on:
   pull_request:
     paths:
-     - "infra/envs/dev/**"
-     - ".github/workflows/terraform-plan.yml"
-     - ".github/workflows/plan-dev.yml"
+      - "infra/envs/dev/**"
+      - ".github/workflows/terraform-plan.yml"
+      - ".github/workflows/plan-dev.yml"
 
 jobs:
   plan:
