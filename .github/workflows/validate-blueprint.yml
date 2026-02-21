@@ -12,5 +12,6 @@ jobs:
       - uses: actions/checkout@v4
       - name: Ensure workflows exist
         run: |
-          test -f workflows/node-ci.yml
+          test -f .github/workflows/node-ci.yml
+          test -f .github/workflows/terraform-plan.yml
           echo "Blueprint structure looks OK."
