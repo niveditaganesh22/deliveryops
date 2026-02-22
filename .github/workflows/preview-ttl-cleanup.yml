@@ -1,0 +1,134 @@
+name: preview-ttl-cleanup
+
+on:
+  schedule:
+    # Daily at 03:15 UTC
+    - cron: "15 3 * * *"
+  workflow_dispatch:
+    inputs:
+      ttl_hours:
+        description: "Destroy previews whose state is older than this many hours"
+        required: true
+        default: "48"
+      dry_run:
+        description: "If true, do not destroy—only print what would be destroyed"
+        required: true
+        default: "true"
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: read
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+
+    env:
+      STATE_BUCKET: ng-deliveryops-tfstate-2026-ca
+      STATE_PREFIX: deliveryops/preview/
+      AWS_REGION: us-east-1
+      ROLE_ARN: arn:aws:iam::418272755898:role/deliveryops-dev
+
+      # Schedule runs are ALWAYS dry-run for safety in this step.
+      SCHEDULE_DRY_RUN: "true"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Decide TTL + Dry Run mode
+        id: mode
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "ttl_hours=${{ inputs.ttl_hours }}" >> $GITHUB_OUTPUT
+            echo "dry_run=${{ inputs.dry_run }}" >> $GITHUB_OUTPUT
+          else
+            echo "ttl_hours=48" >> $GITHUB_OUTPUT
+            echo "dry_run=${{ env.SCHEDULE_DRY_RUN }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: List preview state objects (JSON)
+        run: |
+          aws s3api list-objects-v2 \
+            --bucket "${STATE_BUCKET}" \
+            --prefix "${STATE_PREFIX}" \
+            --output json > objects.json
+
+          echo "Saved objects.json"
+          cat objects.json | jq '.KeyCount'
+
+      - name: Compute candidates (older than TTL + PR closed)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TTL_HOURS="${{ steps.mode.outputs.ttl_hours }}"
+          DRY_RUN="${{ steps.mode.outputs.dry_run }}"
+          NOW_EPOCH="$(date -u +%s)"
+          TTL_SECONDS="$((TTL_HOURS * 3600))"
+
+          echo "TTL_HOURS=$TTL_HOURS"
+          echo "DRY_RUN=$DRY_RUN"
+          echo "NOW_EPOCH=$NOW_EPOCH"
+          echo "TTL_SECONDS=$TTL_SECONDS"
+          echo ""
+
+          # If no objects, stop cleanly
+          COUNT="$(cat objects.json | jq -r '.KeyCount')"
+          if [ "$COUNT" = "0" ] || [ -z "$COUNT" ]; then
+            echo "No preview state objects found. Exiting."
+            exit 0
+          fi
+
+          # Iterate over objects
+          cat objects.json | jq -c '.Contents[] | {key: .Key, lastModified: .LastModified}' | while read -r row; do
+            KEY="$(echo "$row" | jq -r '.key')"
+            LM="$(echo "$row" | jq -r '.lastModified')"
+
+            # Expect keys like deliveryops/preview/pr-123.tfstate
+            PR_NUM="$(echo "$KEY" | sed -n 's|.*/pr-\([0-9]\+\)\.tfstate|\1|p')"
+            if [ -z "$PR_NUM" ]; then
+              echo "SKIP (unrecognized key): $KEY"
+              continue
+            fi
+
+            # Convert LastModified to epoch
+            LM_EPOCH="$(date -u -d "$LM" +%s || true)"
+            if [ -z "$LM_EPOCH" ]; then
+              echo "SKIP (cannot parse date): $KEY (LastModified=$LM)"
+              continue
+            fi
+
+            AGE_SECONDS="$((NOW_EPOCH - LM_EPOCH))"
+
+            if [ "$AGE_SECONDS" -lt "$TTL_SECONDS" ]; then
+              echo "KEEP (fresh) pr-$PR_NUM age=$((AGE_SECONDS/3600))h key=$KEY"
+              continue
+            fi
+
+            # Check PR state via GitHub API
+            PR_STATE="$(gh api repos/${{ github.repository }}/pulls/$PR_NUM --jq '.state' 2>/dev/null || echo 'missing')"
+
+            if [ "$PR_STATE" != "closed" ]; then
+              echo "KEEP (PR not closed: $PR_STATE) pr-$PR_NUM key=$KEY"
+              continue
+            fi
+
+            echo "CANDIDATE (PR closed + old) pr-$PR_NUM age=$((AGE_SECONDS/3600))h key=$KEY"
+
+            # Dry-run only for now
+            if [ "$DRY_RUN" = "true" ]; then
+              echo "DRY_RUN: would destroy preview for pr-$PR_NUM using state key: $KEY"
+            else
+              echo "DRY_RUN is false, but destroy is not implemented in this step."
+              echo "We will implement actual destroy in the next step with guardrails."
+            fi
+
+            echo ""
+          done
