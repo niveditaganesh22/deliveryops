@@ -1,0 +1,33 @@
+name: preview-ttl-cleanup
+
+on:
+  schedule:
+    # Daily at 03:15 UTC (change later if you want)
+    - cron: "15 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::418272755898:role/deliveryops-dev
+          aws-region: us-east-1
+
+      - name: List preview state files
+        run: |
+          aws s3api list-objects-v2 \
+            --bucket ng-deliveryops-tfstate-2026-ca \
+            --prefix "deliveryops/preview/" \
+            --query "Contents[].{Key:Key,LastModified:LastModified}" \
+            --output table
