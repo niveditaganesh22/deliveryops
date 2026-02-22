@@ -1,134 +1,324 @@
-name: preview-ttl-cleanup
+name: Preview TTL Cleanup (Guarded)
 
 on:
   schedule:
-    # Daily at 03:15 UTC
-    - cron: "15 3 * * *"
+    - cron: "15 3 * * *" # 03:15 UTC daily
   workflow_dispatch:
     inputs:
       ttl_hours:
-        description: "Destroy previews whose state is older than this many hours"
-        required: true
+        description: "TTL age threshold in hours (default 48)"
+        required: false
         default: "48"
-      dry_run:
-        description: "If true, do not destroy—only print what would be destroyed"
-        required: true
-        default: "true"
+      max_candidates:
+        description: "Max preview envs to process in one run (default 10)"
+        required: false
+        default: "10"
+      confirm_destroy:
+        description: "Set to true to allow real destroy (DANGEROUS). Schedule always dry-run."
+        required: false
+        default: "false"
+      report_issue_number:
+        description: "Optional: GitHub Issue number to post a cleanup report comment"
+        required: false
+        default: ""
 
 permissions:
   id-token: write
   contents: read
   pull-requests: read
 
+concurrency:
+  group: preview-ttl-cleanup
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+  STATE_BUCKET: ng-deliveryops-tfstate-2026-ca
+  PREVIEW_PREFIX: deliveryops/preview/
+  ROLE_ARN: arn:aws:iam::418272755898:role/deliveryops-dev
+  TF_IN_AUTOMATION: "true"
+
 jobs:
-  cleanup:
+  ttl_cleanup:
     runs-on: ubuntu-latest
-
-    env:
-      STATE_BUCKET: ng-deliveryops-tfstate-2026-ca
-      STATE_PREFIX: deliveryops/preview/
-      AWS_REGION: us-east-1
-      ROLE_ARN: arn:aws:iam::418272755898:role/deliveryops-dev
-
-      # Schedule runs are ALWAYS dry-run for safety in this step.
-      SCHEDULE_DRY_RUN: "true"
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Configure AWS credentials (OIDC)
+      - name: Configure AWS (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ env.ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Decide TTL + Dry Run mode
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Resolve mode + inputs
         id: mode
+        shell: bash
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "ttl_hours=${{ inputs.ttl_hours }}" >> $GITHUB_OUTPUT
-            echo "dry_run=${{ inputs.dry_run }}" >> $GITHUB_OUTPUT
+          set -euo pipefail
+
+          # schedule is ALWAYS dry-run, no exceptions
+          if [[ "${{ github.event_name }}" == "schedule" ]]; then
+            echo "dry_run=true" >> "$GITHUB_OUTPUT"
           else
-            echo "ttl_hours=48" >> $GITHUB_OUTPUT
-            echo "dry_run=${{ env.SCHEDULE_DRY_RUN }}" >> $GITHUB_OUTPUT
+            # workflow_dispatch: allow destroy only if confirm_destroy=true
+            cd="${{ github.event.inputs.confirm_destroy || 'false' }}"
+            if [[ "$cd" == "true" ]]; then
+              echo "dry_run=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "dry_run=true" >> "$GITHUB_OUTPUT"
+            fi
           fi
 
-      - name: List preview state objects (JSON)
-        run: |
-          aws s3api list-objects-v2 \
-            --bucket "${STATE_BUCKET}" \
-            --prefix "${STATE_PREFIX}" \
-            --output json > objects.json
+          ttl="${{ github.event.inputs.ttl_hours || '48' }}"
+          maxc="${{ github.event.inputs.max_candidates || '10' }}"
+          echo "ttl_hours=$ttl" >> "$GITHUB_OUTPUT"
+          echo "max_candidates=$maxc" >> "$GITHUB_OUTPUT"
 
-          echo "Saved objects.json"
-          cat objects.json | jq '.KeyCount'
+          echo "Event: ${{ github.event_name }}"
+          echo "Dry-run: $(cat $GITHUB_OUTPUT | grep dry_run | cut -d= -f2)"
+          echo "TTL hours: $ttl"
+          echo "Max candidates: $maxc"
 
-      - name: Compute candidates (older than TTL + PR closed)
+      - name: Scan preview states (detect candidates)
+        id: scan
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
+
           TTL_HOURS="${{ steps.mode.outputs.ttl_hours }}"
-          DRY_RUN="${{ steps.mode.outputs.dry_run }}"
+          MAX_CANDIDATES="${{ steps.mode.outputs.max_candidates }}"
           NOW_EPOCH="$(date -u +%s)"
-          TTL_SECONDS="$((TTL_HOURS * 3600))"
+          TTL_SECONDS="$(( TTL_HOURS * 3600 ))"
 
-          echo "TTL_HOURS=$TTL_HOURS"
-          echo "DRY_RUN=$DRY_RUN"
-          echo "NOW_EPOCH=$NOW_EPOCH"
-          echo "TTL_SECONDS=$TTL_SECONDS"
-          echo ""
+          echo "Scanning s3://${STATE_BUCKET}/${PREVIEW_PREFIX}"
+          aws s3api list-objects-v2 \
+            --bucket "$STATE_BUCKET" \
+            --prefix "$PREVIEW_PREFIX" \
+            --output json > objects.json
 
-          # If no objects, stop cleanly
-          COUNT="$(cat objects.json | jq -r '.KeyCount')"
-          if [ "$COUNT" = "0" ] || [ -z "$COUNT" ]; then
-            echo "No preview state objects found. Exiting."
+          # Expect keys like: deliveryops/preview/pr-9.tfstate
+          # Filter only matching keys
+          jq -r '.Contents[]?.Key // empty' objects.json \
+            | grep -E '^deliveryops/preview/pr-[0-9]+\.tfstate$' \
+            > keys.txt || true
+
+          if [[ ! -s keys.txt ]]; then
+            echo "No preview state keys found."
+            echo "candidates_json=[]" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          # Iterate over objects
-          cat objects.json | jq -c '.Contents[] | {key: .Key, lastModified: .LastModified}' | while read -r row; do
-            KEY="$(echo "$row" | jq -r '.key')"
-            LM="$(echo "$row" | jq -r '.lastModified')"
+          echo "Found $(wc -l < keys.txt) preview state keys total."
 
-            # Expect keys like deliveryops/preview/pr-123.tfstate
-            PR_NUM="$(echo "$KEY" | sed -n 's|.*/pr-\([0-9]\+\)\.tfstate|\1|p')"
-            if [ -z "$PR_NUM" ]; then
-              echo "SKIP (unrecognized key): $KEY"
-              continue
-            fi
+          # Build candidate list: closed PR + older than TTL
+          # Output JSON array: [{pr_number, key, age_hours, last_modified}]
+          candidates="[]"
+          count=0
 
-            # Convert LastModified to epoch
-            LM_EPOCH="$(date -u -d "$LM" +%s || true)"
-            if [ -z "$LM_EPOCH" ]; then
-              echo "SKIP (cannot parse date): $KEY (LastModified=$LM)"
-              continue
-            fi
+          while read -r key; do
+            pr="$(echo "$key" | sed -E 's#^deliveryops/preview/pr-([0-9]+)\.tfstate$#\1#')"
 
-            AGE_SECONDS="$((NOW_EPOCH - LM_EPOCH))"
+            # Get object's LastModified (ISO8601)
+            lm="$(jq -r --arg k "$key" '.Contents[] | select(.Key==$k) | .LastModified' objects.json)"
+            lm_epoch="$(date -u -d "$lm" +%s || echo 0)"
+            [[ "$lm_epoch" -eq 0 ]] && continue
 
-            if [ "$AGE_SECONDS" -lt "$TTL_SECONDS" ]; then
-              echo "KEEP (fresh) pr-$PR_NUM age=$((AGE_SECONDS/3600))h key=$KEY"
+            age_sec="$(( NOW_EPOCH - lm_epoch ))"
+            age_hours="$(( age_sec / 3600 ))"
+
+            # Only consider older than TTL
+            if (( age_sec < TTL_SECONDS )); then
               continue
             fi
 
             # Check PR state via GitHub API
-            PR_STATE="$(gh api repos/${{ github.repository }}/pulls/$PR_NUM --jq '.state' 2>/dev/null || echo 'missing')"
-
-            if [ "$PR_STATE" != "closed" ]; then
-              echo "KEEP (PR not closed: $PR_STATE) pr-$PR_NUM key=$KEY"
+            # Only destroy if PR exists AND is closed.
+            pr_api="https://api.github.com/repos/${{ github.repository }}/pulls/$pr"
+            http="$(curl -sS -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" -w "%{http_code}" -o pr.json "$pr_api" || true)"
+            if [[ "$http" != "200" ]]; then
+              echo "PR #$pr not found or not accessible (HTTP $http). Skipping for safety."
               continue
             fi
 
-            echo "CANDIDATE (PR closed + old) pr-$PR_NUM age=$((AGE_SECONDS/3600))h key=$KEY"
-
-            # Dry-run only for now
-            if [ "$DRY_RUN" = "true" ]; then
-              echo "DRY_RUN: would destroy preview for pr-$PR_NUM using state key: $KEY"
-            else
-              echo "DRY_RUN is false, but destroy is not implemented in this step."
-              echo "We will implement actual destroy in the next step with guardrails."
+            state="$(jq -r '.state // empty' pr.json)"
+            if [[ "$state" != "closed" ]]; then
+              continue
             fi
 
-            echo ""
+            # Add to candidates
+            candidates="$(jq -c \
+              --arg pr "$pr" \
+              --arg key "$key" \
+              --arg lm "$lm" \
+              --argjson age "$age_hours" \
+              '. + [{"pr_number": ($pr|tonumber), "key": $key, "last_modified": $lm, "age_hours": $age}]' \
+              <<<"$candidates")"
+
+            count=$((count+1))
+            if (( count >= MAX_CANDIDATES )); then
+              break
+            fi
+          done < keys.txt
+
+          echo "Candidates (closed PR + TTL exceeded): $(jq 'length' <<<"$candidates")"
+          echo "$candidates" | jq .
+
+          echo "candidates_json=$(echo "$candidates" | jq -c .)" >> "$GITHUB_OUTPUT"
+
+      - name: Write Job Summary (candidates)
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "## Preview TTL Cleanup Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Repo:** \`${{ github.repository }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Run:** \`${{ github.run_id }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Event:** \`${{ github.event_name }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Mode:** ${{ steps.mode.outputs.dry_run == 'true' && 'DRY-RUN' || 'REAL DESTROY' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **TTL (hours):** \`${{ steps.mode.outputs.ttl_hours }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Max candidates:** \`${{ steps.mode.outputs.max_candidates }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          candidates='${{ steps.scan.outputs.candidates_json }}'
+          if [[ -z "$candidates" || "$candidates" == "[]" ]]; then
+            echo "✅ No candidates found." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          echo "### Candidates" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| PR | State Key | Age (hrs) | Last Modified (UTC) |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---:|---|---:|---|" >> "$GITHUB_STEP_SUMMARY"
+
+          echo "$candidates" | jq -r '.[] | "| #\(.pr_number) | `\(.key)` | \(.age_hours) | \(.last_modified) |"' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Dry-run report
+        if: ${{ steps.mode.outputs.dry_run == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "DRY-RUN ONLY (schedule is always dry-run)."
+          echo '${{ steps.scan.outputs.candidates_json }}' | jq .
+
+      - name: Safety gate (dispatch destroy requires confirm_destroy=true)
+        if: ${{ steps.mode.outputs.dry_run == 'false' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "REAL DESTROY ENABLED (workflow_dispatch + confirm_destroy=true)."
+          echo "Proceeding with sequential destroy of candidates..."
+
+      - name: Sequential destroy candidates
+        if: ${{ steps.mode.outputs.dry_run == 'false' }}
+        shell: bash
+        env:
+          CANDIDATES: ${{ steps.scan.outputs.candidates_json }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${CANDIDATES:-}" ]]; then
+            echo "No candidates JSON found."
+            exit 0
+          fi
+
+          n="$(echo "$CANDIDATES" | jq 'length')"
+          if [[ "$n" == "0" ]]; then
+            echo "No candidates to destroy."
+            exit 0
+          fi
+
+          echo "Destroying $n candidate(s) sequentially..."
+
+          # Destroy one by one
+          for i in $(seq 0 $((n-1))); do
+            pr="$(echo "$CANDIDATES" | jq -r ".[$i].pr_number")"
+            key="$(echo "$CANDIDATES" | jq -r ".[$i].key")"
+
+            echo "----------------------------------------"
+            echo "Destroying preview env for PR #$pr"
+            echo "State key: $key"
+            echo "----------------------------------------"
+
+            # Use the same backend style your preview workflows use:
+            pushd infra/envs/preview >/dev/null
+
+            terraform init -input=false \
+              -backend-config="bucket=${STATE_BUCKET}" \
+              -backend-config="key=${key}" \
+              -backend-config="region=${AWS_REGION}" \
+              -backend-config="dynamodb_table=ng-deliveryops-tf-locks" \
+              -backend-config="encrypt=true"
+
+            terraform destroy -auto-approve -input=false \
+              -var="pr_number=${pr}"
+
+            popd >/dev/null
+
+            echo "Destroyed preview env for PR #$pr"
+
+            # Delete state after successful destroy
+            echo "Deleting state object s3://${STATE_BUCKET}/${key}"
+            aws s3 rm "s3://${STATE_BUCKET}/${key}" || true
+
+            echo "Done PR #$pr"
           done
+
+      - name: Post report comment to issue (optional)
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.report_issue_number != '' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.inputs.report_issue_number }}
+        run: |
+          set -euo pipefail
+
+          mode="${{ steps.mode.outputs.dry_run }}"
+          mode_label="DRY-RUN"
+          if [[ "$mode" == "false" ]]; then mode_label="REAL DESTROY"; fi
+
+          candidates='${{ steps.scan.outputs.candidates_json }}'
+          count="$(echo "$candidates" | jq 'length')"
+
+          body="## Preview TTL Cleanup Report
+          - Repo: \`${{ github.repository }}\`
+          - Run: \`${{ github.run_id }}\`
+          - Mode: **${mode_label}**
+          - TTL Hours: \`${{ steps.mode.outputs.ttl_hours }}\`
+          - Max Candidates: \`${{ steps.mode.outputs.max_candidates }}\`
+          - Candidates: **${count}**
+          "
+
+          if [[ "$count" != "0" ]]; then
+            body="$body
+
+          | PR | State Key | Age (hrs) | Last Modified (UTC) |
+          |---:|---|---:|---|"
+            rows="$(echo "$candidates" | jq -r '.[] | "| #\(.pr_number) | `\(.key)` | \(.age_hours) | \(.last_modified) |"')"
+            body="$body
+          $rows"
+          else
+            body="$body
+
+          ✅ No candidates found."
+          fi
+
+          api="https://api.github.com/repos/${{ github.repository }}/issues/${ISSUE_NUMBER}/comments"
+          jq -n --arg body "$body" '{body:$body}' \
+            | curl -sS -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+              -d @- "$api" >/dev/null
+
+          echo "Posted report to issue #$ISSUE_NUMBER"
