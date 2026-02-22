@@ -15,7 +15,7 @@ concurrency:
 permissions:
   id-token: write
   contents: read
-  pull-requests: read
+  pull-requests: write
 
 jobs:
   apply:
@@ -25,27 +25,59 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-
-      # Use whichever role you want:
-      # - ideal: create a dedicated deliveryops-preview role
-      # - acceptable now: reuse deliveryops-dev role
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::418272755898:role/deliveryops-dev
           aws-region: us-east-1
 
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.6.6
+
       - name: Terraform Init (preview backend key)
         working-directory: infra/envs/preview
         run: |
           terraform init -reconfigure \
-            -backend-config="key=deliveryops/preview/pr-${{ github.event.pull_request.number }}.tfstate"
+            -backend-config="bucket=ng-deliveryops-tfstate-2026-ca" \
+            -backend-config="dynamodb_table=ng-deliveryops-tf-locks" \
+            -backend-config="key=deliveryops/preview/pr-${{ github.event.pull_request.number }}.tfstate" \
+            -backend-config="region=us-east-1"
 
       - name: Terraform Apply (preview)
         working-directory: infra/envs/preview
         env:
           TF_VAR_pr_number: ${{ github.event.pull_request.number }}
+        run: terraform apply -auto-approve
+
+      - name: Read Terraform outputs
+        id: tfout
+        working-directory: infra/envs/preview
         run: |
-          terraform apply -auto-approve
+          echo "bucket_name=$(terraform output -raw bucket_name)" >> $GITHUB_OUTPUT
+          echo "state_key=$(terraform output -raw state_key)" >> $GITHUB_OUTPUT
+
+      - name: Comment preview details on PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = context.payload.pull_request.number;
+            const bucket = "${{ steps.tfout.outputs.bucket_name }}";
+            const stateKey = "${{ steps.tfout.outputs.state_key }}";
+
+            const body = [
+              "🚀 **Preview Environment Ready**",
+              "",
+              `Bucket: ${bucket}`,
+              `State Key: ${stateKey}`,
+              "",
+              "✅ Auto-destroy runs when this PR is closed."
+            ].join("\n");
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body
+            });
