@@ -1,4 +1,4 @@
-# DeliveryOps Blueprint
+# DeliveryOps
 
 A reusable, cost-aware release system for safely delivering cloud and data infrastructure.
 
