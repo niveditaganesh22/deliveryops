@@ -80,7 +80,7 @@ apply-stage.yml
 ```
 from GitHub Actions → Manual dispatch.
 
-** Stage requires approval before execution. **
+**Stage requires approval before execution.**
 
 ## 4. Destroy Behavior
 
