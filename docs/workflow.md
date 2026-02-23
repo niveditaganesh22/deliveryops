@@ -1,7 +1,4 @@
 # Workflows
-
-This document describes the workflows included in DeliveryOps Blueprint.
-
 ---
 
 ## apply-dev.yml
